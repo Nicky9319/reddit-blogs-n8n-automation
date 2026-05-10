@@ -1,0 +1,477 @@
+{
+  "name": "Reddit JSON Fetcher",
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes"
+            }
+          ]
+        }
+      },
+      "id": "66594b63-daa4-47fe-9d0a-42ccc3ee5dd4",
+      "name": "Fetch Pending Threads",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        0,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "search",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "appRFeIVD7Ga2Sl4P"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "tblrWZMgpcR1zRlmg"
+        },
+        "filterByFormula": "{Status} = \"Pending Fetch\"",
+        "returnAll": false,
+        "limit": 1,
+        "options": {},
+        "sort": {
+          "property": [
+            {
+              "field": "Created At"
+            }
+          ]
+        }
+      },
+      "id": "69c08da1-68ef-4df6-b57f-4960224249f8",
+      "name": "Find Pending Threads",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        224,
+        0
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "X6CUZtDRnHyPMcRc",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst record = $input.first().json;\nconst fields = record.fields ?? record;\n\nfunction parseRedditUrl(rawUrl) {\n  const cleanedUrl = String(rawUrl || '').trim();\n  let normalizedUrl = cleanedUrl;\n\n  if (normalizedUrl.startsWith('//')) {\n    normalizedUrl = 'https:' + normalizedUrl;\n  }\n\n  if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {\n    normalizedUrl = 'https://' + normalizedUrl;\n  }\n\n  const schemeSeparatorIndex = normalizedUrl.indexOf('://');\n  if (schemeSeparatorIndex < 0) {\n    throw new Error('Invalid Reddit URL: ' + rawUrl);\n  }\n\n  const withoutScheme = normalizedUrl.slice(schemeSeparatorIndex + 3);\n  const pathStartIndex = withoutScheme.indexOf('/');\n  let host = pathStartIndex >= 0 ? withoutScheme.slice(0, pathStartIndex) : withoutScheme;\n  const path = pathStartIndex >= 0 ? withoutScheme.slice(pathStartIndex) : '';\n\n  host = host.toLowerCase();\n  if (host.startsWith('www.')) {\n    host = host.slice(4);\n  }\n\n  const segments = path.split('/').filter(Boolean);\n  let postId = '';\n\n  if (host === 'redd.it') {\n    postId = segments[0] || '';\n  } else if (host.endsWith('reddit.com')) {\n    const commentsIndex = segments.indexOf('comments');\n    if (commentsIndex >= 0) {\n      postId = segments[commentsIndex + 1] || '';\n    } else if (segments[0] === 'comments') {\n      postId = segments[1] || '';\n    }\n  }\n\n  if (!postId) {\n    throw new Error('Could not extract a Reddit post ID from: ' + rawUrl);\n  }\n\n  return {\n    normalized_url: normalizedUrl,\n    post_id: postId,\n    reddit_fetch_url: 'https://www.reddit.com/comments/' + postId + '.json?raw_json=1',\n  };\n}\n\nconst redditUrl = String(fields['Reddit URL'] ?? fields.reddit_url ?? '').trim();\nconst parsed = parseRedditUrl(redditUrl);\nconst threadId = String(fields['Thread ID'] ?? fields.thread_id ?? parsed.post_id).trim();\n\nif (!record.id || !threadId || !redditUrl) {\n  throw new Error('Pending thread is missing record ID, Thread ID, or Reddit URL.');\n}\n\nreturn [\n  {\n    json: {\n      airtable_record_id: record.id,\n      thread_id: threadId,\n      reddit_url: parsed.normalized_url,\n      subreddit: String(fields.Subreddit ?? fields.subreddit ?? '').trim(),\n      post_id: parsed.post_id,\n      reddit_fetch_url: parsed.reddit_fetch_url,\n      updated_at: new Date().toISOString(),\n    },\n  },\n];\n      "
+      },
+      "id": "6e19eacc-81d1-4a17-bc22-fd40a4372cf7",
+      "name": "Normalize Pending Thread",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $(\"Normalize Pending Thread\").item.json.reddit_fetch_url }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "2a2e823f-8322-4bf9-abb9-f6f81cf1a170",
+      "name": "Fetch Reddit JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\nconst thread = $('Normalize Pending Thread').item.json;\nconst statusCode = response.statusCode ?? response.status ?? 200;\n\nif (statusCode < 200 || statusCode >= 300) {\n  throw new Error('Reddit fetch failed with status ' + statusCode);\n}\n\nlet reddit = response.body ?? response;\nif (!Array.isArray(reddit)) {\n  const allItems = $input.all().map((item) => item.json);\n  if (allItems.length > 1 && allItems.every((item) => item.kind === 'Listing')) {\n    reddit = allItems;\n  }\n}\n\nif (!Array.isArray(reddit)) {\n  throw new Error('Reddit response was not the expected listing array.');\n}\n\nconst post = reddit?.[0]?.data?.children?.[0]?.data ?? {};\nconst subreddit = String(post.subreddit ?? thread.subreddit ?? '').trim();\nconst rawJsonText = JSON.stringify(reddit, null, 2);\nconst rawJsonBase64 = Buffer.from(rawJsonText, 'utf8').toString('base64');\nconst now = new Date().toISOString();\n\nreturn [\n  {\n    json: {\n      airtable_record_id: thread.airtable_record_id,\n      thread_id: thread.thread_id,\n      reddit_url: thread.reddit_url,\n      subreddit,\n      title: String(post.title ?? ''),\n      author: String(post.author ?? ''),\n      post_id: String(post.id ?? thread.post_id ?? ''),\n      comment_count: Number(post.num_comments ?? 0),\n      raw_json_base64: rawJsonBase64,\n      raw_json_filename: thread.thread_id + '_reddit_raw.json',\n      updated_at: now,\n    },\n  },\n];\n      "
+      },
+      "id": "1c944415-62b5-4291-89bb-7fa5213930ce",
+      "name": "Prepare Raw JSON Attachment",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        896,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://content.airtable.com/v0/appRFeIVD7Ga2Sl4P/{{ $json.airtable_record_id }}/Raw%20JSON/uploadAttachment",
+        "authentication": "predefinedCredentialType",
+        "nodeCredentialType": "airtableTokenApi",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Accept",
+              "value": "application/json"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ { file: $json.raw_json_base64, filename: $json.raw_json_filename, contentType: \"application/json\" } }}",
+        "options": {
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "neverError": true,
+              "responseFormat": "json"
+            }
+          },
+          "timeout": 30000
+        }
+      },
+      "id": "a31d8848-27f6-4d25-af9f-dc3e027be7cb",
+      "name": "Upload Raw JSON Attachment",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        1120,
+        0
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "X6CUZtDRnHyPMcRc",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\nconst thread = $('Prepare Raw JSON Attachment').item.json;\nconst statusCode = response.statusCode ?? response.status ?? 200;\n\nif (statusCode < 200 || statusCode >= 300) {\n  throw new Error('Raw JSON attachment upload failed with status ' + statusCode);\n}\n\nreturn [\n  {\n    json: {\n      ...thread,\n      upload_status: statusCode,\n    },\n  },\n];\n      "
+      },
+      "id": "510b1e2d-1079-40fb-a688-8c6e68a62388",
+      "name": "Validate Upload Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1344,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "appRFeIVD7Ga2Sl4P"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "tblrWZMgpcR1zRlmg"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "id": "={{ $json.airtable_record_id }}",
+            "Thread ID": "={{ $json.thread_id }}",
+            "Reddit URL": "={{ $json.reddit_url }}",
+            "Subreddit": "={{ $json.subreddit }}",
+            "Title": "={{ $json.title }}",
+            "Status": "Ready for Processing",
+            "Updated At": "={{ $json.updated_at }}",
+            "Current Batch": 0,
+            "Total Batches": 0
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": true
+            },
+            {
+              "id": "Thread ID",
+              "displayName": "Thread ID",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Reddit URL",
+              "displayName": "Reddit URL",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Subreddit",
+              "displayName": "Subreddit",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Status",
+              "displayName": "Status",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "options",
+              "options": [
+                {
+                  "name": "Pending Fetch",
+                  "value": "Pending Fetch"
+                },
+                {
+                  "name": "Ready for Processing",
+                  "value": "Ready for Processing"
+                },
+                {
+                  "name": "Processing",
+                  "value": "Processing"
+                },
+                {
+                  "name": "Ideas Complete",
+                  "value": "Ideas Complete"
+                },
+                {
+                  "name": "Completed",
+                  "value": "Completed"
+                },
+                {
+                  "name": "Fetch Failed",
+                  "value": "Fetch Failed"
+                }
+              ],
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Title",
+              "displayName": "Title",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Raw JSON",
+              "displayName": "Raw JSON",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "array",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Current Batch",
+              "displayName": "Current Batch",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Total Batches",
+              "displayName": "Total Batches",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "number",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Final Summary",
+              "displayName": "Final Summary",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "string",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Created At",
+              "displayName": "Created At",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            },
+            {
+              "id": "Updated At",
+              "displayName": "Updated At",
+              "required": false,
+              "defaultMatch": false,
+              "canBeUsedToMatch": true,
+              "display": true,
+              "type": "dateTime",
+              "readOnly": false,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "id": "e5bf3a11-e980-48a1-b50c-3454ad0c1644",
+      "name": "Update Thread Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        1568,
+        0
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "X6CUZtDRnHyPMcRc",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Fetch Pending Threads": {
+      "main": [
+        [
+          {
+            "node": "Find Pending Threads",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Find Pending Threads": {
+      "main": [
+        [
+          {
+            "node": "Normalize Pending Thread",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Pending Thread": {
+      "main": [
+        [
+          {
+            "node": "Fetch Reddit JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Reddit JSON": {
+      "main": [
+        [
+          {
+            "node": "Prepare Raw JSON Attachment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Raw JSON Attachment": {
+      "main": [
+        [
+          {
+            "node": "Upload Raw JSON Attachment",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Upload Raw JSON Attachment": {
+      "main": [
+        [
+          {
+            "node": "Validate Upload Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate Upload Response": {
+      "main": [
+        [
+          {
+            "node": "Update Thread Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true
+  },
+  "versionId": "4701274b-983a-4033-8f45-512c7d061e83",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "4ab88d42f153f6095ee8ad8d54e939872bb293f785352eecff5b2dffd873535a"
+  },
+  "id": "WcdEfSFzLTTwEehD",
+  "tags": []
+}

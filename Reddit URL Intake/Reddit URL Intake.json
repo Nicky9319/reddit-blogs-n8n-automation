@@ -1,0 +1,179 @@
+{
+  "name": "Reddit URL Intake",
+  "nodes": [
+    {
+      "parameters": {
+        "formTitle": "Reddit URL Intake",
+        "formDescription": "<p>Paste a Reddit thread URL or short link to create the initial Threads record.</p>",
+        "formFields": {
+          "values": [
+            {
+              "fieldLabel": "Reddit URL",
+              "fieldName": "reddit_url",
+              "placeholder": "https://www.reddit.com/r/entrepreneur/comments/abc123/example/",
+              "requiredField": true
+            }
+          ]
+        },
+        "options": {
+          "appendAttribution": false,
+          "buttonLabel": "Submit Reddit URL",
+          "path": "reddit-url-intake",
+          "respondWithOptions": {
+            "values": {
+              "formSubmittedText": "Your Reddit URL was received and is being validated."
+            }
+          }
+        }
+      },
+      "id": "b525cfa9-0aaa-43f4-87a4-598665816834",
+      "name": "Reddit URL Intake Form",
+      "type": "n8n-nodes-base.formTrigger",
+      "typeVersion": 2.5,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "67d4f3ea-8320-4ecd-8621-5b9a09f1c001"
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst input = $input.first().json;\n\nfunction firstString(...values) {\n  for (const value of values) {\n    if (typeof value === 'string' && value.trim()) {\n      return value.trim();\n    }\n  }\n  return '';\n}\n\nfunction parseRedditUrl(rawUrl) {\n  const cleanedUrl = String(rawUrl).trim();\n  let normalizedUrl = cleanedUrl;\n\n  if (normalizedUrl.startsWith('//')) {\n    normalizedUrl = 'https:' + normalizedUrl;\n  }\n\n  if (!normalizedUrl.startsWith('http://') && !normalizedUrl.startsWith('https://')) {\n    normalizedUrl = 'https://' + normalizedUrl;\n  }\n\n  const schemeSeparatorIndex = normalizedUrl.indexOf('://');\n  if (schemeSeparatorIndex < 0) {\n    throw new Error('Invalid Reddit URL: ' + rawUrl);\n  }\n\n  const withoutScheme = normalizedUrl.slice(schemeSeparatorIndex + 3);\n  const pathStartIndex = withoutScheme.indexOf('/');\n  let host = pathStartIndex >= 0 ? withoutScheme.slice(0, pathStartIndex) : withoutScheme;\n  const path = pathStartIndex >= 0 ? withoutScheme.slice(pathStartIndex) : '';\n\n  host = host.toLowerCase();\n  if (host.startsWith('www.')) {\n    host = host.slice(4);\n  }\n  const segments = path.split('/').filter(Boolean);\n\n  let subreddit = '';\n  let postId = '';\n\n  if (host === 'redd.it') {\n    postId = segments[0] || '';\n  } else if (host.endsWith('reddit.com')) {\n    const commentsIndex = segments.indexOf('comments');\n\n    if (commentsIndex >= 0) {\n      subreddit = segments[1] || '';\n      postId = segments[commentsIndex + 1] || '';\n    } else if (segments[0] === 'comments') {\n      postId = segments[1] || '';\n    }\n  }\n\n  if (!postId) {\n    throw new Error('Could not extract a Reddit post ID from: ' + rawUrl);\n  }\n\n  return {\n    subreddit,\n    postId,\n    redditFetchUrl: 'https://www.reddit.com/comments/' + postId + '.json?raw_json=1',\n  };\n}\n\nconst submittedUrl = firstString(\n  input.reddit_url,\n  input.redditUrl,\n  input.redditURL,\n  input.formData?.reddit_url,\n  input.formData?.redditUrl,\n  input.body?.reddit_url,\n  input.body?.redditUrl,\n  input['Reddit URL'],\n);\n\nif (!submittedUrl) {\n  throw new Error('Reddit URL is required.');\n}\n\nconst parsed = parseRedditUrl(submittedUrl);\n\nreturn [\n  {\n    json: {\n      reddit_url: submittedUrl,\n      postId: parsed.postId,\n      inputSubreddit: parsed.subreddit,\n      redditFetchUrl: parsed.redditFetchUrl,\n      validatedAt: new Date().toISOString(),\n    },\n  },\n];\n      "
+      },
+      "id": "7ee899b5-6a3c-4cd0-b766-5cfefefa3d52",
+      "name": "Validate and Normalize URL",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.redditFetchUrl }}",
+        "options": {}
+      },
+      "id": "d4df0dec-982c-4a9b-b317-a47a0f122bd5",
+      "name": "Fetch Reddit JSON",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.4,
+      "position": [
+        448,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "\nconst response = $input.first().json;\nconst statusCode = response.statusCode ?? response.status ?? 200;\n\nif (statusCode < 200 || statusCode >= 300) {\n  throw new Error('Reddit fetch failed with status ' + statusCode);\n}\n\nconst payload = response.body ?? response;\nconst listing = Array.isArray(payload) ? payload : payload?.body ?? payload;\n\nlet post = null;\n\nif (Array.isArray(listing)) {\n  post = listing[0]?.data?.children?.[0]?.data ?? null;\n} else {\n  post = listing?.data?.children?.[0]?.data ?? null;\n}\n\nif (!post?.id) {\n  throw new Error('Could not parse Reddit post data from the fetched JSON.');\n}\n\nconst subreddit = post.subreddit || '';\n\nif (!subreddit) {\n  throw new Error('Could not determine the subreddit from the Reddit response.');\n}\n\nconst threadId = subreddit + '_' + post.id;\nconst now = new Date().toISOString();\n\nreturn [\n  {\n    json: {\n      'Thread ID': threadId,\n      'Reddit URL': 'https://www.reddit.com/r/' + subreddit + '/comments/' + post.id + '/',\n      'Subreddit': subreddit,\n      'Status': 'Pending Fetch',\n      'JSON Drive Link': '',\n      'Current Batch': 0,\n      'Total Batches': 0,\n      'Final Summary': '',\n      'Created At': now,\n      'Updated At': now,\n    },\n  },\n];\n      "
+      },
+      "id": "b6b9c8a0-6f0e-4e25-b6d6-7ae0b0e58526",
+      "name": "Build Airtable Record",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        0
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "create",
+        "base": {
+          "__rl": true,
+          "mode": "id",
+          "value": "appRFeIVD7Ga2Sl4P"
+        },
+        "table": {
+          "__rl": true,
+          "mode": "id",
+          "value": "tblrWZMgpcR1zRlmg"
+        },
+        "columns": {
+          "mappingMode": "autoMapInputData",
+          "value": {}
+        },
+        "options": {
+          "typecast": true
+        }
+      },
+      "id": "2c910185-9dc0-480e-97a4-4ee3c5dab9da",
+      "name": "Create Thread Record",
+      "type": "n8n-nodes-base.airtable",
+      "typeVersion": 2.2,
+      "position": [
+        896,
+        0
+      ],
+      "credentials": {
+        "airtableTokenApi": {
+          "id": "X6CUZtDRnHyPMcRc",
+          "name": "Airtable Personal Access Token account"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Reddit URL Intake Form": {
+      "main": [
+        [
+          {
+            "node": "Validate and Normalize URL",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate and Normalize URL": {
+      "main": [
+        [
+          {
+            "node": "Fetch Reddit JSON",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch Reddit JSON": {
+      "main": [
+        [
+          {
+            "node": "Build Airtable Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Airtable Record": {
+      "main": [
+        [
+          {
+            "node": "Create Thread Record",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": true,
+  "settings": {
+    "executionOrder": "v1",
+    "binaryMode": "separate",
+    "availableInMCP": true,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "versionId": "572458e8-2502-4cc2-92b9-e3516b14859f",
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp",
+    "instanceId": "4ab88d42f153f6095ee8ad8d54e939872bb293f785352eecff5b2dffd873535a"
+  },
+  "id": "t4dtPCOhjDWkKMv3",
+  "tags": []
+}
