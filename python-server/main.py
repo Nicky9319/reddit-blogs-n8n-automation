@@ -41,6 +41,8 @@ async def generate(req: GenerateRequest):
             model=req.model or "haiku",
         )
 
+        print("Prompt received:", req.prompt)
+
         async for msg in query(
             prompt=req.prompt,
             options=options,
@@ -69,6 +71,6 @@ async def generate(req: GenerateRequest):
 if __name__ == "__main__":
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host="0.0.0.0",
         port=8700,
     )

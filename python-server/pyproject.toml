@@ -7,5 +7,6 @@ requires-python = ">=3.13"
 dependencies = [
     "claude-agent-sdk>=0.1.80",
     "fastapi>=0.136.1",
+    "pyairtable>=3.3.0",
     "uvicorn>=0.46.0",
 ]

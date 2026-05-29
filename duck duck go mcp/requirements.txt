@@ -1,0 +1,3 @@
+mcp[studio]
+duckduckgo-mcp
+langchain-community
