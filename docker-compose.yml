@@ -45,6 +45,18 @@ services:
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf:ro
 
+  duckduckgo-mcp:
+    build:
+      context: "./duck duck go mcp"
+      dockerfile: dockerfile
+    container_name: duckduckgo_mcp
+    restart: unless-stopped
+    networks:
+      - prustlr
+    ports:
+      - "5000:5000"
+    command: ["--port", "5000"]
+
 volumes:
   n8n_data:
 
